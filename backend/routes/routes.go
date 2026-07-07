@@ -1,14 +1,25 @@
 package routes
 
 import (
+	"net/http"
+	"time"
+
+	"supplierhub-backend/config"
 	"supplierhub-backend/controllers"
 	"supplierhub-backend/middlewares"
+	"supplierhub-backend/repositories"
 
 	"github.com/gin-gonic/gin"
 )
 
 // SetupRoutes mengatur pemetaan semua rute API dalam aplikasi Gin
 func SetupRoutes(router *gin.Engine) {
+	productRepo := repositories.NewProductRepository(config.DB)
+	supplierHandler := controllers.NewSupplierHandler(productRepo, config.DB)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	paymentHandler := controllers.NewPaymentHandler(httpClient)
+
 	api := router.Group("/api")
 
 	// Auth Routes (Public)
@@ -35,17 +46,53 @@ func SetupRoutes(router *gin.Engine) {
 		"/supplierhub/pembayaran",
 		middlewares.RequireAuth(),
 		middlewares.RequireRole("user"),
-		controllers.CreatePaymentRequest,
+		paymentHandler.CreatePaymentRequest,
 	)
 
 	supplierHubGroup := router.Group("/supplierhub")
 	supplierHubGroup.Use(middlewares.RequestLogger())
 	{
+		supplierHubGroup.GET(
+			"/manajemen_bahan_baku",
+			middlewares.RequireAuth(),
+			middlewares.RequireRole("supplier", "admin"),
+			controllers.GetSupplierHubMaterials,
+		)
+		supplierHubGroup.POST(
+			"/manajemen_bahan_baku",
+			middlewares.RequireAuth(),
+			middlewares.RequireRole("supplier"),
+			controllers.CreateSupplierHubMaterial,
+		)
+		supplierHubGroup.PUT(
+			"/manajemen_bahan_baku/:id",
+			middlewares.RequireAuth(),
+			middlewares.RequireRole("supplier", "admin"),
+			controllers.UpdateSupplierHubMaterial,
+		)
+		supplierHubGroup.DELETE(
+			"/manajemen_bahan_baku/:id",
+			middlewares.RequireAuth(),
+			middlewares.RequireRole("supplier", "admin"),
+			controllers.DeleteSupplierHubMaterial,
+		)
+		supplierHubGroup.POST(
+			"/order_bahan",
+			middlewares.RequireAuth(),
+			middlewares.RequireRole("user"),
+			controllers.CreateSupplierHubOrder,
+		)
 		supplierHubGroup.PUT(
 			"/konfirmasi_stok/:order_id",
 			middlewares.RequireAuth(),
 			middlewares.RequireRole("supplier"),
 			controllers.ConfirmSupplierHubStock,
+		)
+		supplierHubGroup.GET(
+			"/biaya_layanan_supplier",
+			middlewares.RequireAuth(),
+			middlewares.RequireRole("supplier", "admin"),
+			controllers.GetSupplierHubServiceFeeSummary,
 		)
 		supplierHubGroup.POST("/payment/callback", controllers.HandleSupplierHubPaymentCallback)
 	}
@@ -94,25 +141,25 @@ func SetupRoutes(router *gin.Engine) {
 	supplierGroup := api.Group("/supplier")
 	supplierGroup.Use(middlewares.RequireRole("supplier"))
 	{
-		supplierGroup.GET("/profile", controllers.GetSupplierProfile)
-		supplierGroup.PUT("/profile", controllers.UpdateSupplierProfile)
-		supplierGroup.GET("/stats", controllers.GetSupplierStats)
-		supplierGroup.GET("/products", controllers.GetSupplierProducts)
-		supplierGroup.POST("/products", controllers.CreateProduct)
-		supplierGroup.PUT("/products/:id", controllers.UpdateProduct)
-		supplierGroup.DELETE("/products/:id", controllers.DeleteProduct)
-		supplierGroup.GET("/notifications", controllers.GetSupplierNotifications)
-		supplierGroup.PUT("/notifications/:id/read", controllers.MarkSupplierNotificationRead)
-		supplierGroup.GET("/orders", controllers.GetSupplierOrders)
-		supplierGroup.POST("/orders/update-status", controllers.UpdateOrderStatus)
-		supplierGroup.PUT("/orders/update-status", controllers.UpdateOrderStatus)
-		supplierGroup.PUT("/orders/:id", controllers.UpdateOrderStatus)
+		supplierGroup.GET("/profile", supplierHandler.GetSupplierProfile)
+		supplierGroup.PUT("/profile", supplierHandler.UpdateSupplierProfile)
+		supplierGroup.GET("/stats", supplierHandler.GetSupplierStats)
+		supplierGroup.GET("/products", supplierHandler.GetSupplierProducts)
+		supplierGroup.POST("/products", supplierHandler.CreateProduct)
+		supplierGroup.PUT("/products/:id", supplierHandler.UpdateProduct)
+		supplierGroup.DELETE("/products/:id", supplierHandler.DeleteProduct)
+		supplierGroup.GET("/notifications", supplierHandler.GetSupplierNotifications)
+		supplierGroup.PUT("/notifications/:id/read", supplierHandler.MarkSupplierNotificationRead)
+		supplierGroup.GET("/orders", supplierHandler.GetSupplierOrders)
+		supplierGroup.POST("/orders/update-status", supplierHandler.UpdateOrderStatus)
+		supplierGroup.PUT("/orders/update-status", supplierHandler.UpdateOrderStatus)
+		supplierGroup.PUT("/orders/:id", supplierHandler.UpdateOrderStatus)
 	}
 
 	api.POST(
 		"/products",
 		middlewares.RequireRole("supplier"),
-		controllers.CreateProduct,
+		supplierHandler.CreateProduct,
 	)
 
 	// Admin Routes

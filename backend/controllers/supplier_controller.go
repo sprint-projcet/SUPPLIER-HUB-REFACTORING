@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"errors"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -16,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type updateSupplierOrderStatusInput struct {
@@ -31,9 +29,21 @@ type supplierProfileInput struct {
 	Region       string `json:"region" binding:"required"`
 }
 
-// supplierProfilePayload has been moved to models.User.ToProfileResponse()
+// SupplierHandler handles HTTP requests for Supplier actions
+type SupplierHandler struct {
+	productRepo repositories.ProductRepository
+	db          *gorm.DB
+}
 
-func getCurrentSupplier(c *gin.Context) (models.User, bool) {
+// NewSupplierHandler creates a new SupplierHandler instance
+func NewSupplierHandler(productRepo repositories.ProductRepository, db *gorm.DB) *SupplierHandler {
+	return &SupplierHandler{
+		productRepo: productRepo,
+		db:          db,
+	}
+}
+
+func (h *SupplierHandler) getCurrentSupplier(c *gin.Context) (models.User, bool) {
 	var supplier models.User
 
 	supplierID, ok := getAuthenticatedUserID(c)
@@ -41,7 +51,7 @@ func getCurrentSupplier(c *gin.Context) (models.User, bool) {
 		return supplier, false
 	}
 
-	if err := config.DB.Where("id = ? AND role = ?", supplierID, models.RoleSupplier).First(&supplier).Error; err != nil {
+	if err := h.db.Where("id = ? AND role = ?", supplierID, models.RoleSupplier).First(&supplier).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Profil supplier tidak ditemukan"})
 			return supplier, false
@@ -53,8 +63,8 @@ func getCurrentSupplier(c *gin.Context) (models.User, bool) {
 	return supplier, true
 }
 
-func GetSupplierProfile(c *gin.Context) {
-	supplier, ok := getCurrentSupplier(c)
+func (h *SupplierHandler) GetSupplierProfile(c *gin.Context) {
+	supplier, ok := h.getCurrentSupplier(c)
 	if !ok {
 		return
 	}
@@ -65,8 +75,8 @@ func GetSupplierProfile(c *gin.Context) {
 	})
 }
 
-func UpdateSupplierProfile(c *gin.Context) {
-	supplier, ok := getCurrentSupplier(c)
+func (h *SupplierHandler) UpdateSupplierProfile(c *gin.Context) {
+	supplier, ok := h.getCurrentSupplier(c)
 	if !ok {
 		return
 	}
@@ -93,12 +103,12 @@ func UpdateSupplierProfile(c *gin.Context) {
 		"region":        region,
 	}
 
-	if err := config.DB.Model(&supplier).Updates(updates).Error; err != nil {
+	if err := h.db.Model(&supplier).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui profil supplier"})
 		return
 	}
 
-	if err := config.DB.Where("id = ?", supplier.ID).First(&supplier).Error; err != nil {
+	if err := h.db.Where("id = ?", supplier.ID).First(&supplier).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memuat ulang profil supplier"})
 		return
 	}
@@ -129,7 +139,7 @@ func UpdateSupplierProfile(c *gin.Context) {
 	})
 }
 
-func GetSupplierStats(c *gin.Context) {
+func (h *SupplierHandler) GetSupplierStats(c *gin.Context) {
 	supplierID, ok := getAuthenticatedUserID(c)
 	if !ok {
 		return
@@ -152,28 +162,28 @@ func GetSupplierStats(c *gin.Context) {
 		models.OrderCompleted,
 	}
 
-	if err := config.DB.Model(&models.Order{}).
+	if err := h.db.Model(&models.Order{}).
 		Where("supplier_id = ? AND status = ?", supplierID, models.OrderCompleted).
 		Count(&completedOrders).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung pesanan selesai"})
 		return
 	}
 
-	if err := config.DB.Model(&models.Order{}).
+	if err := h.db.Model(&models.Order{}).
 		Where("supplier_id = ? AND status IN ?", supplierID, pendingStatuses).
 		Count(&pendingOrders).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung pesanan pending"})
 		return
 	}
 
-	if err := config.DB.Model(&models.Product{}).
+	if err := h.db.Model(&models.Product{}).
 		Where("supplier_id = ? AND stock > 0", supplierID).
 		Count(&activeProducts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung produk aktif"})
 		return
 	}
 
-	if err := config.DB.Model(&models.Product{}).
+	if err := h.db.Model(&models.Product{}).
 		Where("supplier_id = ?", supplierID).
 		Select("COALESCE(SUM(stock), 0)").
 		Scan(&totalStock).Error; err != nil {
@@ -181,7 +191,7 @@ func GetSupplierStats(c *gin.Context) {
 		return
 	}
 
-	if err := config.DB.Model(&models.Order{}).
+	if err := h.db.Model(&models.Order{}).
 		Where("supplier_id = ? AND status IN ?", supplierID, revenueStatuses).
 		Select("COALESCE(SUM(total_base_price - system_fee), 0)").
 		Scan(&supplierRevenue).Error; err != nil {
@@ -191,7 +201,7 @@ func GetSupplierStats(c *gin.Context) {
 
 	// Hitung rata-rata rating nyata milik supplier ini
 	var avgRating float64
-	config.DB.Model(&models.Review{}).
+	h.db.Model(&models.Review{}).
 		Joins("JOIN products ON reviews.product_id = products.id").
 		Where("products.supplier_id = ?", supplierID).
 		Select("COALESCE(AVG(reviews.rating), 0)").
@@ -211,11 +221,11 @@ func GetSupplierStats(c *gin.Context) {
 	})
 }
 
-func GetSupplierProducts(c *gin.Context) {
+func (h *SupplierHandler) GetSupplierProducts(c *gin.Context) {
 	supplierID, _ := c.Get("user_id")
 
 	var products []models.Product
-	if err := config.DB.Where("supplier_id = ?", supplierID).Find(&products).Error; err != nil {
+	if err := h.db.Where("supplier_id = ?", supplierID).Find(&products).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data produk"})
 		return
 	}
@@ -223,8 +233,8 @@ func GetSupplierProducts(c *gin.Context) {
 	c.JSON(http.StatusOK, products)
 }
 
-func CreateProduct(c *gin.Context) {
-	supplier, ok := getCurrentSupplier(c)
+func (h *SupplierHandler) CreateProduct(c *gin.Context) {
+	supplier, ok := h.getCurrentSupplier(c)
 	if !ok {
 		return
 	}
@@ -285,7 +295,7 @@ func CreateProduct(c *gin.Context) {
 		ImageURL:    imageURL,
 	}
 
-	if err := repositories.NewProductRepository(config.DB).Create(&input); err != nil {
+	if err := h.productRepo.Insert(&input); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan produk: " + err.Error()})
 		return
 	}
@@ -315,8 +325,8 @@ func CreateProduct(c *gin.Context) {
 	})
 }
 
-func UpdateProduct(c *gin.Context) {
-	supplier, ok := getCurrentSupplier(c)
+func (h *SupplierHandler) UpdateProduct(c *gin.Context) {
+	supplier, ok := h.getCurrentSupplier(c)
 	if !ok {
 		return
 	}
@@ -335,7 +345,7 @@ func UpdateProduct(c *gin.Context) {
 	productID := c.Param("id")
 
 	var product models.Product
-	if err := config.DB.Where("id = ? AND supplier_id = ?", productID, supplier.ID).First(&product).Error; err != nil {
+	if err := h.db.Where("id = ? AND supplier_id = ?", productID, supplier.ID).First(&product).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Produk tidak ditemukan atau Anda tidak berwenang"})
 		return
 	}
@@ -384,7 +394,7 @@ func UpdateProduct(c *gin.Context) {
 		}
 	}
 
-	if err := config.DB.Save(&product).Error; err != nil {
+	if err := h.db.Save(&product).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui produk: " + err.Error()})
 		return
 	}
@@ -418,20 +428,20 @@ func UpdateProduct(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Produk berhasil diupdate", "data": product})
 }
 
-func DeleteProduct(c *gin.Context) {
-	supplier, ok := getCurrentSupplier(c)
+func (h *SupplierHandler) DeleteProduct(c *gin.Context) {
+	supplier, ok := h.getCurrentSupplier(c)
 	if !ok {
 		return
 	}
 
 	productID := c.Param("id")
 	var product models.Product
-	if err := config.DB.Where("id = ? AND supplier_id = ?", productID, supplier.ID).First(&product).Error; err != nil {
+	if err := h.db.Where("id = ? AND supplier_id = ?", productID, supplier.ID).First(&product).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Produk tidak ditemukan atau Anda tidak berwenang"})
 		return
 	}
 
-	if err := config.DB.Delete(&product).Error; err != nil {
+	if err := h.db.Delete(&product).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus produk: " + err.Error()})
 		return
 	}
@@ -460,13 +470,13 @@ func DeleteProduct(c *gin.Context) {
 	})
 }
 
-func GetSupplierNotifications(c *gin.Context) {
+func (h *SupplierHandler) GetSupplierNotifications(c *gin.Context) {
 	supplierID, ok := getAuthenticatedUserID(c)
 	if !ok {
 		return
 	}
 
-	query := config.DB.Where("user_id = ? AND role = ?", supplierID, string(models.RoleSupplier))
+	query := h.db.Where("user_id = ? AND role = ?", supplierID, string(models.RoleSupplier))
 	if c.Query("unread_only") == "true" {
 		query = query.Where("is_read = ?", false)
 	}
@@ -499,7 +509,7 @@ func GetSupplierNotifications(c *gin.Context) {
 	})
 }
 
-func MarkSupplierNotificationRead(c *gin.Context) {
+func (h *SupplierHandler) MarkSupplierNotificationRead(c *gin.Context) {
 	supplierID, ok := getAuthenticatedUserID(c)
 	if !ok {
 		return
@@ -508,7 +518,7 @@ func MarkSupplierNotificationRead(c *gin.Context) {
 	notificationID := c.Param("id")
 	now := time.Now()
 
-	result := config.DB.Model(&models.Notification{}).
+	result := h.db.Model(&models.Notification{}).
 		Where("id = ? AND user_id = ? AND role = ?", notificationID, supplierID, string(models.RoleSupplier)).
 		Updates(map[string]interface{}{
 			"is_read": true,
@@ -529,20 +539,20 @@ func MarkSupplierNotificationRead(c *gin.Context) {
 	})
 }
 
-func GetSupplierOrders(c *gin.Context) {
+func (h *SupplierHandler) GetSupplierOrders(c *gin.Context) {
 	supplierID, ok := getAuthenticatedUserID(c)
 	if !ok {
 		return
 	}
 
 	var orders []models.Order
-	query := config.DB.
+	query := h.db.
 		Preload("Product").
 		Preload("Umkm").
 		Where("supplier_id = ?", supplierID)
 
 	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
-		normalizedStatus, valid := (&models.Order{}).NormalizeStatus(status)
+		normalizedStatus, valid := models.NormalizeOrderStatus(status)
 		if !valid {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Status pesanan tidak valid"})
 			return
@@ -561,7 +571,7 @@ func GetSupplierOrders(c *gin.Context) {
 	})
 }
 
-func UpdateOrderStatus(c *gin.Context) {
+func (h *SupplierHandler) UpdateOrderStatus(c *gin.Context) {
 	supplierID, ok := getAuthenticatedUserID(c)
 	if !ok {
 		return
@@ -582,14 +592,14 @@ func UpdateOrderStatus(c *gin.Context) {
 		return
 	}
 
-	nextStatus, valid := (&models.Order{}).NormalizeStatus(input.Status)
+	nextStatus, valid := models.NormalizeOrderStatus(input.Status)
 	if !valid {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Status pesanan tidak valid"})
 		return
 	}
 
 	var order models.Order
-	if err := config.DB.Preload("Product").Where("id = ? AND supplier_id = ?", orderID, supplierID).First(&order).Error; err != nil {
+	if err := h.db.Preload("Product").Where("id = ? AND supplier_id = ?", orderID, supplierID).First(&order).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Pesanan tidak ditemukan"})
 			return
@@ -598,21 +608,22 @@ func UpdateOrderStatus(c *gin.Context) {
 		return
 	}
 
-	previousStatus := order.Status
 	if err := order.TransitionTo(nextStatus); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":          err.Error(),
-			"current_status": previousStatus,
+			"current_status": order.Status,
 			"next_status":    nextStatus,
 		})
 		return
 	}
 
-	if err := config.DB.Model(&order).Update("status", order.Status).Error; err != nil {
+	if err := h.db.Model(&order).Update("status", nextStatus).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui status pesanan"})
 		return
 	}
 
+	previousStatus := order.Status
+	order.Status = nextStatus
 	shortOrderID := order.ID
 	if len(shortOrderID) > 8 {
 		shortOrderID = shortOrderID[:8]
@@ -763,220 +774,4 @@ func GetSupplierDetail(c *gin.Context) {
 		"status": "success",
 		"data":   response,
 	})
-}
-
-type supplierStockConfirmationInput struct {
-	Action string `json:"action" binding:"required"`
-	Note   string `json:"note"`
-}
-
-type supplierHubHTTPError struct {
-	Status  int
-	Message string
-}
-
-func (e supplierHubHTTPError) Error() string {
-	return e.Message
-}
-
-func ConfirmSupplierHubStock(c *gin.Context) {
-	supplierID, ok := getAuthenticatedUserID(c)
-	if !ok {
-		return
-	}
-
-	orderID := strings.TrimSpace(c.Param("order_id"))
-	var input supplierStockConfirmationInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Action confirm atau reject wajib diisi"})
-		return
-	}
-
-	action := strings.ToLower(strings.TrimSpace(input.Action))
-	note := strings.TrimSpace(input.Note)
-	if action != "confirm" && action != "reject" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Action harus bernilai confirm atau reject"})
-		return
-	}
-
-	responseStatus := http.StatusOK
-	responseMessage := ""
-	var responseOrder models.Order
-	var responsePayment *models.Payment
-	var gatewayPayload interface{}
-
-	err := config.DB.Transaction(func(tx *gorm.DB) error {
-		var order models.Order
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", orderID).
-			First(&order).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return supplierHubHTTPError{Status: http.StatusNotFound, Message: "Order tidak ditemukan"}
-			}
-			return err
-		}
-
-		if order.SupplierID != supplierID {
-			return supplierHubHTTPError{Status: http.StatusForbidden, Message: "Supplier tidak boleh mengonfirmasi order supplier lain"}
-		}
-
-		if action == "reject" {
-			order.Status = models.OrderRejectedBySupplier
-			if err := tx.Model(&order).Update("status", order.Status).Error; err != nil {
-				return err
-			}
-			if err := services.CreateFinanceLog(tx, order, nil, "supplier_rejected", note); err != nil {
-				return err
-			}
-			responseOrder = order
-			responseMessage = "Order ditolak supplier"
-			return nil
-		}
-
-		if order.StockDeducted {
-			return supplierHubHTTPError{Status: http.StatusBadRequest, Message: "Stok untuk order ini sudah pernah dikurangi."}
-		}
-
-		var product models.Product
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", order.ProductID).
-			First(&product).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return supplierHubHTTPError{Status: http.StatusNotFound, Message: "Produk tidak ditemukan"}
-			}
-			return err
-		}
-
-		if product.Stock < order.Quantity {
-			order.Status = models.OrderStockUnavailable
-			if err := tx.Model(&order).Update("status", order.Status).Error; err != nil {
-				return err
-			}
-			if err := services.CreateFinanceLog(tx, order, nil, "stock_not_enough", "Stok tidak mencukupi. "+note); err != nil {
-				return err
-			}
-			responseStatus = http.StatusBadRequest
-			responseMessage = "Stok tidak mencukupi."
-			responseOrder = order
-			return nil
-		}
-
-		product.Stock -= order.Quantity
-		if err := tx.Save(&product).Error; err != nil {
-			return err
-		}
-
-		order.StockDeducted = true
-		order.Status = models.OrderSupplierConfirmed
-		if err := tx.Model(&order).Updates(map[string]interface{}{
-			"stock_deducted": true,
-			"status":         order.Status,
-		}).Error; err != nil {
-			return err
-		}
-		if err := services.CreateFinanceLog(tx, order, nil, "supplier_confirmed", note); err != nil {
-			return err
-		}
-
-		payment := models.Payment{
-			OrderID:         order.ID,
-			UserID:          order.UmkmID,
-			Amount:          order.GrandTotal,
-			SupplierFee:     order.SystemFee,
-			Status:          models.PaymentPending,
-			PaymentMethod:   "smartbank",
-			ExternalOrderID: order.ID,
-		}
-		if err := tx.Create(&payment).Error; err != nil {
-			return err
-		}
-
-		gatewayResult, gatewayErr := services.CreateSmartBankPaymentRequest(order, payment)
-		gatewayPayload = gatewayResult
-		if gatewayErr != nil {
-			responseStatus = http.StatusBadGateway
-			responseMessage = "Stok berhasil dikonfirmasi, tetapi payment request gagal dibuat"
-			responseText := gatewayResult.RawResponse
-			if responseText == "" {
-				responseText = gatewayErr.Error()
-			}
-
-			payment.Status = models.PaymentFailed
-			payment.GatewayStatus = "request_failed"
-			payment.GatewayResponse = responseText
-			if err := tx.Model(&payment).Updates(map[string]interface{}{
-				"status":           payment.Status,
-				"gateway_status":   payment.GatewayStatus,
-				"gateway_response": payment.GatewayResponse,
-			}).Error; err != nil {
-				return err
-			}
-
-			order.Status = models.OrderPaymentRequestFailed
-			if err := tx.Model(&order).Update("status", order.Status).Error; err != nil {
-				return err
-			}
-			if err := services.CreateFinanceLog(tx, order, &payment, "payment_request_failed", gatewayErr.Error()); err != nil {
-				return err
-			}
-			responseOrder = order
-			responsePayment = &payment
-			return nil
-		}
-
-		payment.PaymentReference = gatewayResult.PaymentReference
-		payment.VirtualAccount = gatewayResult.VirtualAccount
-		payment.GatewayStatus = gatewayResult.Status
-		payment.GatewayResponse = gatewayResult.RawResponse
-		if err := tx.Model(&payment).Updates(map[string]interface{}{
-			"payment_reference": payment.PaymentReference,
-			"virtual_account":   payment.VirtualAccount,
-			"gateway_status":    payment.GatewayStatus,
-			"gateway_response":  payment.GatewayResponse,
-		}).Error; err != nil {
-			return err
-		}
-
-		order.Status = models.OrderPaymentPending
-		if err := tx.Model(&order).Update("status", order.Status).Error; err != nil {
-			return err
-		}
-		if err := services.CreateFinanceLog(tx, order, &payment, "payment_request_created", "Payment request berhasil dibuat melalui API Gateway"); err != nil {
-			return err
-		}
-
-		responseMessage = "Stok dikonfirmasi dan payment request berhasil dibuat"
-		responseOrder = order
-		responsePayment = &payment
-		return nil
-	})
-
-	if err != nil {
-		var httpErr supplierHubHTTPError
-		if errors.As(err, &httpErr) {
-			c.JSON(httpErr.Status, gin.H{"error": httpErr.Message})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses konfirmasi stok"})
-		return
-	}
-
-	payload := gin.H{
-		"status":  "success",
-		"message": responseMessage,
-		"data": gin.H{
-			"order": responseOrder,
-		},
-	}
-	if responsePayment != nil {
-		payload["data"].(gin.H)["payment"] = responsePayment
-	}
-	if gatewayPayload != nil {
-		payload["data"].(gin.H)["gateway_response"] = gatewayPayload
-	}
-	if responseStatus >= http.StatusBadRequest {
-		payload["status"] = "warning"
-	}
-
-	c.JSON(responseStatus, payload)
 }

@@ -10,10 +10,11 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
 	"supplierhub-backend/config"
+	"supplierhub-backend/dto"
 	"supplierhub-backend/models"
 	"supplierhub-backend/services"
 
@@ -38,13 +39,13 @@ func generateOAuthState() (string, error) {
 		return "", err
 	}
 
-	return base64.RawURLEncoding.EncodeToString(stateBytes), nil
+	return 	base64.RawURLEncoding.EncodeToString(stateBytes), nil
 }
 
 func createAuthToken(user models.User) (string, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		return "", errors.New("Environment variable JWT_SECRET is required!")
+		return "", errors.New("Kritis: Lingkungan JWT_SECRET wajib dikonfigurasi!")
 	}
 
 	claims := jwt.MapClaims{
@@ -81,84 +82,25 @@ func sendOAuthPopupMessage(c *gin.Context, payload gin.H) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlContent))
 }
 
-// DTO untuk input form Register
-type RegisterInput struct {
-	BusinessName string `json:"business_name" binding:"required"`
-	Email        string `json:"email" binding:"required,email"`
-	Password     string `json:"password" binding:"required,min=6"`
-	Role         string `json:"role" binding:"required"`
-}
-
-// DTO untuk input form Login
-type LoginInput struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
-}
-
 // Register menangani pendaftaran awal untuk UMKM dan Supplier
 func Register(c *gin.Context) {
-	// Parse fields dari form-data
-	businessName := c.PostForm("business_name")
-	email := c.PostForm("email")
-	password := c.PostForm("password")
-	role := c.PostForm("role")
-	address := c.PostForm("address")
-	category := c.PostForm("category")
-	region := c.PostForm("region")
-
-	// 1. Validasi Input
-	isGoogle := c.PostForm("is_google") == "true"
-	if businessName == "" || email == "" || role == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Kolom Nama, Email, dan Role wajib diisi!"})
-		return
-	}
-	if !isGoogle && password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Password wajib diisi!"})
+	var input dto.RegisterInput
+	if err := c.ShouldBind(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 2. File Upload Handling (Dokumen)
-	var documentURL string
-	file, err := c.FormFile("document")
-	if err == nil {
-		// Buat folder jika belum ada
-		os.MkdirAll(config.DocumentUploadDir, os.ModePerm)
-
-		// Gunakan timestamp untuk nama file yang unik
-		filename := fmt.Sprintf("%d_%s", time.Now().Unix(), file.Filename)
-		filepathStr := filepath.Join(config.DocumentUploadDir, filename)
-
-		if err := c.SaveUploadedFile(file, filepathStr); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan dokumen legalitas"})
+	newUser, err := services.NewUserService().RegisterNewUser(input)
+	if err != nil {
+		if err.Error() == "Email sudah terdaftar!" {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
-		documentURL = filepathStr
-	} else if role == "supplier" {
-		// Supplier wajib upload dokumen
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Dokumen legalitas (SIUP/Akta) wajib diunggah untuk pendaftaran supplier"})
-		return
-	}
-
-	// 3. Panggil UserService untuk proses registrasi (SOLID - SRP)
-	dto := services.RegisterDTO{
-		BusinessName: businessName,
-		Email:        email,
-		Password:     password,
-		Role:         role,
-		Address:      address,
-		Category:     category,
-		Region:       region,
-		DocumentURL:  documentURL,
-		IsGoogle:     isGoogle,
-	}
-
-	newUser, errReg := services.NewUserService().RegisterNewUser(dto)
-	if errReg != nil {
-		if errReg.Error() == "Email sudah terdaftar!" {
-			c.JSON(http.StatusConflict, gin.H{"error": errReg.Error()})
+		if strings.Contains(err.Error(), "wajib") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": errReg.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -175,11 +117,11 @@ func Register(c *gin.Context) {
 
 // Login memvalidasi kredensial dan menerbitkan JWT Token
 func Login(c *gin.Context) {
-	var input LoginInput
+	var input dto.LoginInput
 
 	// 1. Validasi Input JSON
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Data tidak valid atau kurang lengkap"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format email tidak valid atau data tidak lengkap"})
 		return
 	}
 

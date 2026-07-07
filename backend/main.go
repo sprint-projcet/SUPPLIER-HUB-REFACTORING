@@ -16,6 +16,11 @@ func main() {
 	config.ConnectDatabase()
 	config.SetupGoogleOAuth()
 
+	// Temuan 2: Validasi keberadaan variabel lingkungan wajib saat startup aplikasi
+	if os.Getenv("JWT_SECRET") == "" {
+		log.Fatal("Kritis: Lingkungan JWT_SECRET wajib dikonfigurasi!")
+	}
+
 	// 2. Setup Gin Router
 	r := gin.Default()
 

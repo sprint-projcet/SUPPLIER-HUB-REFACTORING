@@ -6,7 +6,7 @@ import (
 )
 
 const DocumentUploadDir = "uploads/documents"
-const SupplierHubFeeRate = 0.03
+const PlatformFeeRate = 0.03
 
 
 func AppBaseURL() string {

@@ -51,8 +51,8 @@ type Product struct {
 	Description   string    `gorm:"type:text" json:"description"`
 	Location      string    `gorm:"type:varchar(255)" json:"location"`
 	ImageURL      string    `gorm:"type:varchar(255)" json:"image_url"`
-	RatingAverage float64   `gorm:"->;column:rating_average" json:"rating_average"`
-	ReviewCount   int       `gorm:"->;column:review_count" json:"review_count"`
+	RatingAverage float64   `gorm:"->" json:"rating_average"`
+	ReviewCount   int       `gorm:"->" json:"review_count"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 
@@ -79,17 +79,6 @@ const (
 	OrderCancelled                   OrderStatus = "cancelled"
 )
 
-var ActiveOrderStatuses = []OrderStatus{
-	OrderPending,
-	OrderPendingSupplierConfirmation,
-	OrderSupplierConfirmed,
-	OrderPaymentPending,
-	OrderPaid,
-	OrderProcessing,
-	OrderShipped,
-	OrderShipmentCreated,
-}
-
 // Order merepresentasikan tagihan pembelian antara UMKM dan Supplier
 type Order struct {
 	ID             string      `gorm:"type:varchar(36);primaryKey" json:"id"`
@@ -111,72 +100,6 @@ type Order struct {
 	Umkm     User     `gorm:"foreignKey:UmkmID" json:"umkm,omitempty"`
 	Supplier User     `gorm:"foreignKey:SupplierID" json:"supplier,omitempty"`
 	Payment  *Payment `gorm:"foreignKey:OrderID" json:"payment,omitempty"`
-}
-
-func (o *Order) NormalizeStatus(status string) (OrderStatus, bool) {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "pending":
-		return OrderPending, true
-	case "pending_supplier_confirmation", "menunggu_konfirmasi":
-		return OrderPendingSupplierConfirmation, true
-	case "rejected_by_supplier", "ditolak_supplier":
-		return OrderRejectedBySupplier, true
-	case "stock_unavailable", "stok_habis":
-		return OrderStockUnavailable, true
-	case "supplier_confirmed", "dikonfirmasi_supplier":
-		return OrderSupplierConfirmed, true
-	case "payment_pending", "menunggu_pembayaran":
-		return OrderPaymentPending, true
-	case "payment_failed", "pembayaran_gagal":
-		return OrderPaymentFailed, true
-	case "shipment_created", "pengiriman_dibuat":
-		return OrderShipmentCreated, true
-	case "paid":
-		return OrderPaid, true
-	case "processed", "processing", "diproses":
-		return OrderProcessing, true
-	case "sent", "shipped", "dikirim":
-		return OrderShipped, true
-	case "completed", "selesai":
-		return OrderCompleted, true
-	case "cancelled", "canceled", "batal":
-		return OrderCancelled, true
-	default:
-		return "", false
-	}
-}
-
-func (o *Order) TransitionTo(newStatus OrderStatus) error {
-	if o.Status == newStatus {
-		return nil
-	}
-
-	valid := false
-	switch o.Status {
-	case OrderPending:
-		valid = (newStatus == OrderProcessing || newStatus == OrderCancelled)
-	case OrderPendingSupplierConfirmation:
-		valid = (newStatus == OrderSupplierConfirmed || newStatus == OrderRejectedBySupplier || newStatus == OrderStockUnavailable || newStatus == OrderCancelled)
-	case OrderSupplierConfirmed:
-		valid = (newStatus == OrderPaymentPending || newStatus == OrderCancelled)
-	case OrderPaymentPending:
-		valid = (newStatus == OrderPaid || newStatus == OrderPaymentFailed || newStatus == OrderCancelled)
-	case OrderPaid:
-		valid = (newStatus == OrderProcessing || newStatus == OrderShipmentCreated || newStatus == OrderCancelled)
-	case OrderProcessing:
-		valid = (newStatus == OrderShipped || newStatus == OrderCancelled)
-	case OrderShipped:
-		valid = (newStatus == OrderCompleted)
-	default:
-		valid = false
-	}
-
-	if !valid {
-		return fmt.Errorf("transisi status dari %s ke %s tidak valid", o.Status, newStatus)
-	}
-
-	o.Status = newStatus
-	return nil
 }
 
 type PaymentStatus string
@@ -344,22 +267,6 @@ func (u *User) BeforeCreate(tx *gorm.DB) (err error) {
 	return
 }
 
-func (u *User) ToProfileResponse() map[string]interface{} {
-	return map[string]interface{}{
-		"id":            u.ID,
-		"business_name": u.BusinessName,
-		"email":         u.Email,
-		"role":          u.Role,
-		"address":       u.Address,
-		"category":      u.Category,
-		"region":        u.Region,
-		"document_url":  u.DocumentURL,
-		"status":        u.Status,
-		"created_at":    u.CreatedAt,
-		"updated_at":    u.UpdatedAt,
-	}
-}
-
 func (p *Product) BeforeCreate(tx *gorm.DB) (err error) {
 	if p.ID == "" {
 		p.ID = uuid.New().String()
@@ -451,15 +358,109 @@ func (r *Review) BeforeCreate(tx *gorm.DB) (err error) {
 	return
 }
 
-func SearchSuppliersScope(term string) func(db *gorm.DB) *gorm.DB {
+// ToProfileResponse serializes the user domain model to a clean profile response map
+func (u *User) ToProfileResponse() map[string]interface{} {
+	return map[string]interface{}{
+		"id":            u.ID,
+		"business_name": u.BusinessName,
+		"email":         u.Email,
+		"role":          u.Role,
+		"address":       u.Address,
+		"category":      u.Category,
+		"region":        u.Region,
+		"pic_name":      u.PICName,
+		"phone":         u.Phone,
+		"document_url":  u.DocumentURL,
+		"status":        u.Status,
+		"created_at":    u.CreatedAt,
+		"updated_at":    u.UpdatedAt,
+	}
+}
+
+// TransitionTo validates and performs an order status transition
+func (o *Order) TransitionTo(newStatus OrderStatus) error {
+	if o.Status == newStatus {
+		return nil
+	}
+
+	valid := false
+	switch o.Status {
+	case OrderPending, OrderPendingSupplierConfirmation:
+		valid = newStatus == OrderProcessing || newStatus == OrderCancelled || newStatus == OrderSupplierConfirmed || newStatus == OrderRejectedBySupplier || newStatus == OrderStockUnavailable || newStatus == OrderPaymentPending
+	case OrderSupplierConfirmed:
+		valid = newStatus == OrderPaymentPending || newStatus == OrderCancelled
+	case OrderPaymentPending:
+		valid = newStatus == OrderPaid || newStatus == OrderPaymentFailed || newStatus == OrderCancelled
+	case OrderPaid:
+		valid = newStatus == OrderProcessing || newStatus == OrderShipmentCreated || newStatus == OrderCompleted
+	case OrderShipmentCreated, OrderProcessing:
+		valid = newStatus == OrderShipped || newStatus == OrderCompleted
+	case OrderShipped:
+		valid = newStatus == OrderCompleted
+	}
+
+	if !valid {
+		return fmt.Errorf("transisi status tidak valid dari %s ke %s", o.Status, newStatus)
+	}
+
+	o.Status = newStatus
+	return nil
+}
+
+// NormalizeOrderStatus converts order status strings into typed OrderStatus
+func NormalizeOrderStatus(status string) (OrderStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending":
+		return OrderPending, true
+	case "pending_supplier_confirmation", "menunggu_konfirmasi":
+		return OrderPendingSupplierConfirmation, true
+	case "rejected_by_supplier", "ditolak_supplier":
+		return OrderRejectedBySupplier, true
+	case "stock_unavailable", "stok_habis":
+		return OrderStockUnavailable, true
+	case "supplier_confirmed", "dikonfirmasi_supplier":
+		return OrderSupplierConfirmed, true
+	case "payment_pending", "menunggu_pembayaran":
+		return OrderPaymentPending, true
+	case "payment_failed", "pembayaran_gagal":
+		return OrderPaymentFailed, true
+	case "shipment_created", "pengiriman_dibuat":
+		return OrderShipmentCreated, true
+	case "paid":
+		return OrderPaid, true
+	case "processed", "processing", "diproses":
+		return OrderProcessing, true
+	case "sent", "shipped", "dikirim":
+		return OrderShipped, true
+	case "completed", "selesai":
+		return OrderCompleted, true
+	case "cancelled", "canceled", "batal":
+		return OrderCancelled, true
+	default:
+		return "", false
+	}
+}
+
+// FilterSupplier provides a GORM Scope for supplier search filtering
+func FilterSupplier(term string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
-		likeSearch := "%" + term + "%"
+		like := "%" + term + "%"
 		return db.Where(
 			"business_name LIKE ? OR email LIKE ? OR category LIKE ? OR region LIKE ?",
-			likeSearch,
-			likeSearch,
-			likeSearch,
-			likeSearch,
+			like, like, like, like,
 		)
 	}
 }
+
+// ActiveStatuses defines all the active/processing order statuses
+var ActiveStatuses = []OrderStatus{
+	OrderPending,
+	OrderPendingSupplierConfirmation,
+	OrderSupplierConfirmed,
+	OrderPaymentPending,
+	OrderPaid,
+	OrderProcessing,
+	OrderShipped,
+	OrderShipmentCreated,
+}
+

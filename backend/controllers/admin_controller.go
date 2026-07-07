@@ -110,7 +110,7 @@ func GetAdminStats(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung total transaksi"})
 		return
 	}
-	if err := config.DB.Model(&models.Order{}).Where("status IN ?", models.ActiveOrderStatuses).Count(&activeOrders).Error; err != nil {
+	if err := config.DB.Model(&models.Order{}).Where("status IN ?", models.ActiveStatuses).Count(&activeOrders).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung pesanan aktif"})
 		return
 	}
@@ -155,7 +155,7 @@ func GetAdminSuppliers(c *gin.Context) {
 	}
 
 	if search := strings.TrimSpace(c.Query("search")); search != "" {
-		query = query.Scopes(models.SearchSuppliersScope(search))
+		query = query.Scopes(models.FilterSupplier(search))
 	}
 
 	if err := query.Order("created_at DESC").Find(&suppliers).Error; err != nil {
@@ -833,5 +833,3 @@ func SendLowStockAlert(c *gin.Context) {
 		"data":        notification,
 	})
 }
-
-// toString has been moved to utils.InterfaceToString()

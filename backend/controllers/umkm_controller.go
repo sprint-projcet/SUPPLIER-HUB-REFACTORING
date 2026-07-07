@@ -117,8 +117,6 @@ func GetUserOrders(c *gin.Context) {
 	})
 }
 
-// userProfilePayload has been moved to models.User.ToProfileResponse()
-
 func getCurrentUMKM(c *gin.Context) (models.User, bool) {
 	var user models.User
 
@@ -229,7 +227,36 @@ func UpdateUserProfile(c *gin.Context) {
 	})
 }
 
-// --- ALGORITMA INTI TELAH DIPINDAHKAN KE UTILS ---
+// --- ALGORITMA INTI ---
+
+// QuickSortPrice mengimplementasikan Quick Sort untuk mengurutkan harga
+func QuickSortPrice(items []models.Product, low, high int, asc bool) {
+	if low < high {
+		pi := partitionPrice(items, low, high, asc)
+		QuickSortPrice(items, low, pi-1, asc)
+		QuickSortPrice(items, pi+1, high, asc)
+	}
+}
+
+func partitionPrice(items []models.Product, low, high int, asc bool) int {
+	pivot := items[high].Price
+	i := low - 1
+	for j := low; j < high; j++ {
+		if asc {
+			if items[j].Price <= pivot {
+				i++
+				items[i], items[j] = items[j], items[i]
+			}
+		} else {
+			if items[j].Price >= pivot {
+				i++
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+	items[i+1], items[high] = items[high], items[i+1]
+	return i + 1
+}
 
 // ----------------------
 
@@ -237,9 +264,11 @@ func UpdateUserProfile(c *gin.Context) {
 func GetProducts(c *gin.Context) {
 	var allProducts []models.Product
 
-	// Tarik data beserta kalkulasi rata-rata dalam satu kueri Subquery tunggal (Solusi N+1 Query)
+	// Tarik seluruh data produk dari database, hitung rating rata-rata & jumlah ulasan untuk tiap produk secara dinamis menggunakan subqueries
 	if err := config.DB.Preload("Supplier").
-		Select("products.*, COALESCE((SELECT AVG(rating) FROM reviews WHERE reviews.product_id = products.id), 0) as rating_average, COALESCE((SELECT COUNT(id) FROM reviews WHERE reviews.product_id = products.id), 0) as review_count").
+		Select("products.*, " +
+			"COALESCE((SELECT AVG(rating) FROM reviews WHERE reviews.product_id = products.id), 0) as rating_average, " +
+			"COALESCE((SELECT COUNT(id) FROM reviews WHERE reviews.product_id = products.id), 0) as review_count").
 		Find(&allProducts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data produk"})
 		return
@@ -267,9 +296,9 @@ func GetProducts(c *gin.Context) {
 	sortBy := c.Query("sort_by")
 	if len(filteredProducts) > 0 {
 		if sortBy == "price_asc" {
-			utils.QuickSortPrice(filteredProducts, 0, len(filteredProducts)-1, true)
+			QuickSortPrice(filteredProducts, 0, len(filteredProducts)-1, true)
 		} else if sortBy == "price_desc" {
-			utils.QuickSortPrice(filteredProducts, 0, len(filteredProducts)-1, false)
+			QuickSortPrice(filteredProducts, 0, len(filteredProducts)-1, false)
 		}
 	}
 
@@ -301,14 +330,14 @@ func CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// 1. Validasi eksistensi ID Produk langsung di database (menghindari Memory Bloat)
+	// 1. Validasi ID Produk menggunakan kueri COUNT bawaan database yang memanfaatkan Primary Key Indexing
 	var count int64
 	if err := config.DB.Model(&models.Product{}).Where("id = ?", input.ItemID).Count(&count).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi produk"})
 		return
 	}
 	if count == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Item ID tidak valid atau tidak ditemukan"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Item ID tidak ditemukan"})
 		return
 	}
 
@@ -330,10 +359,10 @@ func CreateOrder(c *gin.Context) {
 
 	// 3. Kalkulasi harga pesanan
 	totalBasePrice := product.Price * float64(input.Quantity)
-	systemFee := totalBasePrice * config.SupplierHubFeeRate
+	systemFee := totalBasePrice * config.PlatformFeeRate
 	grandTotal := totalBasePrice + systemFee
 
-	// 5. Buat dan Simpan Order ke Database
+	// 4. Buat dan Simpan Order ke Database
 	order := models.Order{
 		UmkmID:         umkmID,
 		SupplierID:     product.SupplierID,

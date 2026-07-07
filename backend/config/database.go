@@ -27,10 +27,6 @@ func ConnectDatabase() {
 		log.Println("Peringatan: Tidak dapat memuat file .env atau backend/.env (mungkin menggunakan environment default)")
 	}
 
-	if os.Getenv("JWT_SECRET") == "" {
-		log.Fatal("Environment variable JWT_SECRET is required!")
-	}
-
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		// Default config untuk MySQL (contoh development)

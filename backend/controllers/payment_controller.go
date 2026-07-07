@@ -16,24 +16,27 @@ import (
 	"gorm.io/gorm"
 )
 
-type PaymentGatewayClient interface {
+// HTTPClient represents a mockable HTTP client interface
+type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
-
-var DefaultPaymentGatewayClient PaymentGatewayClient = &http.Client{Timeout: 10 * time.Second}
 
 type paymentRequestInput struct {
 	OrderID       string `json:"order_id" binding:"required"`
 	PaymentMethod string `json:"payment_method"`
 }
 
-type smartBankCallbackInput struct {
-	OrderID       string `json:"order_id" binding:"required"`
-	PaymentStatus string `json:"payment_status"`
-	Status        string `json:"status"`
+// PaymentHandler handles payment creation requests
+type PaymentHandler struct {
+	httpClient HTTPClient
 }
 
-func CreatePaymentRequest(c *gin.Context) {
+// NewPaymentHandler creates a new PaymentHandler instance
+func NewPaymentHandler(client HTTPClient) *PaymentHandler {
+	return &PaymentHandler{httpClient: client}
+}
+
+func (h *PaymentHandler) CreatePaymentRequest(c *gin.Context) {
 	userID, ok := getAuthenticatedUserID(c)
 	if !ok {
 		return
@@ -75,7 +78,7 @@ func CreatePaymentRequest(c *gin.Context) {
 	if baseTotal <= 0 {
 		baseTotal = order.Product.Price * float64(order.Quantity)
 	}
-	systemFee := baseTotal * config.SupplierHubFeeRate
+	systemFee := baseTotal * config.PlatformFeeRate
 	grandTotal := baseTotal + systemFee
 
 	payment := models.Payment{
@@ -114,7 +117,7 @@ func CreatePaymentRequest(c *gin.Context) {
 		gatewayPayload["payment_method"] = payment.PaymentMethod
 	}
 
-	gatewayResponse, statusCode, err := forwardPaymentToSmartBank(gatewayPayload)
+	gatewayResponse, statusCode, err := h.forwardPaymentToSmartBank(gatewayPayload)
 	if err != nil {
 		_ = config.DB.Model(&payment).Updates(map[string]interface{}{
 			"status":           models.PaymentFailed,
@@ -157,7 +160,7 @@ func HandleSmartBankCallback(c *gin.Context) {
 	HandleSupplierHubPaymentCallback(c)
 }
 
-func forwardPaymentToSmartBank(payload gin.H) (map[string]interface{}, int, error) {
+func (h *PaymentHandler) forwardPaymentToSmartBank(payload gin.H) (map[string]interface{}, int, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, 0, err
@@ -171,7 +174,7 @@ func forwardPaymentToSmartBank(payload gin.H) (map[string]interface{}, int, erro
 	req.Header.Set("X-Target-Service", "SmartBank")
 	req.Header.Set("X-Target-Path", "/mock/smartbank/pay")
 
-	resp, err := DefaultPaymentGatewayClient.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

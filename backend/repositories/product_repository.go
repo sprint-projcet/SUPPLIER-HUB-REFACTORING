@@ -6,14 +6,20 @@ import (
 	"gorm.io/gorm"
 )
 
-type ProductRepository struct {
+// ProductRepository provides database access for Product entities
+type ProductRepository interface {
+	Insert(product *models.Product) error
+}
+
+type productRepo struct {
 	db *gorm.DB
 }
 
-func NewProductRepository(db *gorm.DB) *ProductRepository {
-	return &ProductRepository{db: db}
+// NewProductRepository creates a new ProductRepository instance
+func NewProductRepository(db *gorm.DB) ProductRepository {
+	return &productRepo{db: db}
 }
 
-func (r *ProductRepository) Create(product *models.Product) error {
+func (r *productRepo) Insert(product *models.Product) error {
 	return r.db.Create(product).Error
 }
